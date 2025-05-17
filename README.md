@@ -42,9 +42,8 @@ g++ cpp_algo.cpp -o cpp_algo
 
 #### 💡 To Use:
 
-```bash
-open leaflet_practice.html
-```
+Click on Go Live option in VS Code
+
 ![Routing Demo](img/leaflet_practice_output.png)
 ---
 
@@ -59,9 +58,8 @@ open leaflet_practice.html
 
 #### 💡 How to Launch:
 
-```bash
-open routing_service.html
-```
+Click on Go Live option in VS Code
+
 ![Routing Demo](img/routing_service_output.png)
 ---
 
@@ -83,9 +81,7 @@ open routing_service.html
 
 #### 💡 How to Use:
 
-```bash
-open shortest_path_overpass_api.html
-```
+Click on Go Live option in VS Code
 
 ![Routing Demo](img/shortest_path_overpass_api_output.png)
 ---
@@ -99,9 +95,8 @@ Users can search for locations using built-in geocoder
 
 Automatically pans to the searched location
 
-```bash
-open search.html
-```
+Click on Go Live option in VS Code
+
 ![Routing Demo](img/search_output_1.png)
 
 ![Routing Demo](img/search_output_2.png)
