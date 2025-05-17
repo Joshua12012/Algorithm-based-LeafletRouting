@@ -103,6 +103,7 @@ Automatically pans to the searched location
 open search.html
 ```
 ![Routing Demo](img/search_output_1.png)
+
 ![Routing Demo](img/search_output_2.png)
 ---
 
