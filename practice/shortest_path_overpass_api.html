@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OSM Route Calculator</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
+    <style>
+        body { 
+            margin: 0; 
+            padding: 0; 
+        }
+        #map { 
+            width: 100%; 
+            height: 100vh; 
+        }
+        #controls { 
+            position:static;
+            top: 10px;
+            left: 10px;
+            z-index: 1000;
+            background: white;
+            padding: 20px;
+            border-radius: 4px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        #loading-overlay {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255,255,255,0.8);
+            z-index: 2000;
+            justify-content: center;
+            align-items: center;
+        }
+        button {
+            padding: 8px 16px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        #status {
+            margin-top: 10px;
+            font-size: 14px;
+        }
+        #distance {
+            margin-top: 10px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <button id="calculateButton">Calculate Route</button>
+        <div id="status"></div>
+        <div id="distance"></div>
+    </div>
+    <div id="loading-overlay">Loading...</div>
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
+    <script>
+        class Graph {
+            constructor() {
+                this.nodes = new Map();
+            }
+
+            addNode(id, lat, lon) {
+                if (!this.nodes.has(id)) {
+                    this.nodes.set(id, {
+                        id,
+                        lat,
+                        lon,
+                        edges: new Map()
+                    });
+                }
+            }
+
+            addEdge(fromId, toId, weight) {
+                const fromNode = this.nodes.get(fromId);
+                const toNode = this.nodes.get(toId);
+                if (fromNode && toNode) {
+                    fromNode.edges.set(toId, weight);
+                    toNode.edges.set(fromId, weight);
+                }
+            }
+
+            findNearestNode(lat, lon) {
+                let nearestNode = null;
+                let minDistance = Infinity;
+
+                this.nodes.forEach(node => {
+                    const distance = calculateDistance(lat, lon, node.lat, node.lon);
+                    if (distance < minDistance) {
+                        minDistance = distance;
+                        nearestNode = node;
+                    }
+                });
+
+                return nearestNode;
+            }
+
+            shortestPath(startId, endId) {
+                const distances = new Map();
+                const previous = new Map();
+                const unvisited = new Set();
+
+                // Initialize distances
+                this.nodes.forEach((node, id) => {
+                    distances.set(id, Infinity);
+                    unvisited.add(id);
+                });
+                distances.set(startId, 0);
+
+                while (unvisited.size > 0) {
+                    // Find node with minimum distance
+                    let current = null;
+                    let minDistance = Infinity;
+                    unvisited.forEach(id => {
+                        const distance = distances.get(id);
+                        if (distance < minDistance) {
+                            minDistance = distance;
+                            current = id;
+                        }
+                    });
+
+                    if (current === null || current === endId) break;
+
+                    unvisited.delete(current);
+                    const currentNode = this.nodes.get(current);
+
+                    // Update distances to neighbors
+                    currentNode.edges.forEach((weight, neighborId) => {
+                        if (unvisited.has(neighborId)) {
+                            const newDistance = distances.get(current) + weight;
+                            if (newDistance < distances.get(neighborId)) {
+                                distances.set(neighborId, newDistance);
+                                previous.set(neighborId, current);
+                            }
+                        }
+                    });
+                }
+
+                // Build path
+                const path = [];
+                let current = endId;
+                
+                if (!previous.has(endId)) {
+                    return path; // No path found
+                }
+
+                while (current !== undefined) {
+                    const node = this.nodes.get(current);
+                    path.unshift({
+                        lat: node.lat,
+                        lng: node.lon
+                    });
+                    current = previous.get(current);
+                }
+
+                return path;
+            }
+        }
+
+        class RouteState {
+            constructor() {
+                this.map = null;
+                this.start = null;
+                this.destination = null;
+                this.markers = [];
+                this.routeLine = null;
+                this.graph = new Graph();
+                this.init();
+            }
+
+            init() {
+                this.initMap();
+                this.initEventListeners();
+            }
+
+            initMap() {
+                this.map = L.map('map').setView([18.5204, 73.8567], 13);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '© OpenStreetMap contributors'
+                }).addTo(this.map);
+                this.map.on('click', (e) => this.handleMapClick(e));
+
+            }
+
+            initEventListeners() {
+                document.getElementById('calculateButton').addEventListener('click', () => this.calculateRoute());
+            }
+
+            handleMapClick(e) {
+                if (!this.start) {
+                    this.start = e.latlng;
+                    this.addMarker(this.start, "Start");
+                    this.updateStatus("Start point selected. Click again for destination.");
+                } else if (!this.destination) {
+                    this.destination = e.latlng;
+                    this.addMarker(this.destination, "Destination");
+                    this.updateStatus("Destination selected. Click 'Calculate Route'");
+                }
+            }
+
+            addMarker(latlng, title) {
+                const marker = L.marker(latlng, { title }).addTo(this.map);
+                this.markers.push(marker);
+            }
+
+            drawRoute(path) {
+                if (this.routeLine) {
+                    this.map.removeLayer(this.routeLine);
+                }
+                this.routeLine = L.polyline(path, {
+                    color: 'blue',
+                    weight: 4,
+                    opacity: 0.7
+                }).addTo(this.map);
+                this.map.fitBounds(this.routeLine.getBounds(), { padding: [50, 50] });
+            }
+
+            updateStatus(message, isError = false) {
+                const statusEl = document.getElementById('status');
+                statusEl.textContent = message;
+                statusEl.style.color = isError ? 'red' : 'black';
+            }
+
+            updateDistance(distance) {
+                const distanceEl = document.getElementById('distance');
+                distanceEl.textContent = distance;
+            }
+
+            showLoading(show = true) {
+                document.getElementById('loading-overlay').style.display = show ? 'flex' : 'none';
+            }
+
+            async calculateRoute() {
+                if (!this.start || !this.destination) {
+                    this.updateStatus("Please select both points first", true);
+                    return;
+                }
+
+                this.showLoading(true);
+                try {
+                    const bounds = {
+                        south: Math.min(this.start.lat, this.destination.lat) - 0.01,
+                        north: Math.max(this.start.lat, this.destination.lat) + 0.01,
+                        west: Math.min(this.start.lng, this.destination.lng) - 0.01,
+                        east: Math.max(this.start.lng, this.destination.lng) + 0.01
+                    };
+
+                    // Validate bounds
+                    if (Object.values(bounds).some(v => !isFinite(v))) {
+                        throw new Error("Invalid coordinates selected");
+                    }
+
+                    const query = this.createOverpassQuery(bounds);
+                    const osmData = await this.fetchWithFallback(query);
+                    
+                    // Reset graph for new calculation
+                    this.graph = new Graph();
+
+                    // Process nodes first
+                    osmData.elements
+                        .filter(el => el.type === 'node')
+                        .forEach(el => {
+                            this.graph.addNode(el.id, el.lat, el.lon);
+                        });
+
+                    // Process ways and create edges
+                    osmData.elements
+                        .filter(el => el.type === 'way' && el.tags.highway)
+                        .forEach(el => {
+                            for (let i = 0; i < el.nodes.length - 1; i++) {
+                                const fromNode = this.graph.nodes.get(el.nodes[i]);
+                                const toNode = this.graph.nodes.get(el.nodes[i + 1]);
+                                if (fromNode && toNode) {
+                                    const distance = calculateDistance(
+                                        fromNode.lat,
+                                        fromNode.lon,
+                                        toNode.lat,
+                                        toNode.lon
+                                    );
+                                    this.graph.addEdge(el.nodes[i], el.nodes[i + 1], distance);
+                                }
+                            }
+                        });
+
+                    const startNode = this.graph.findNearestNode(this.start.lat, this.start.lng);
+                    const endNode = this.graph.findNearestNode(this.destination.lat, this.destination.lng);
+
+                    if (!startNode || !endNode) {
+                        throw new Error("Could not find suitable roads nearby. Try different points.");
+                    }
+
+                    const path = this.graph.shortestPath(startNode.id, endNode.id);
+                    
+                    if (path.length === 0) {
+                        throw new Error("No route found between selected points");
+                    }
+
+                    this.drawRoute(path);
+                    
+                    // Calculate total distance
+                    let totalDistance = 0;
+                    for (let i = 0; i < path.length - 1; i++) {
+                        totalDistance += calculateDistance(
+                            path[i].lat,
+                            path[i].lng,
+                            path[i + 1].lat,
+                            path[i + 1].lng
+                        );
+                    }
+
+                    this.updateDistance(`Total distance: ${totalDistance.toFixed(2)} km`);
+                    this.updateStatus("Route calculated successfully");
+                } catch (error) {
+                    console.error(error);
+                    this.updateStatus(error.message, true);
+                } finally {
+                    this.showLoading(false);
+                }
+            }
+
+            createOverpassQuery(bounds) {
+                return `[out:json][timeout:90];
+                    (
+                        way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential)$"]
+                        (${bounds.south},${bounds.west},${bounds.north},${bounds.east});
+                        >;
+                    );
+                    out body;`;
+            }
+
+            async fetchWithFallback(query) {
+                const endpoints = [
+                    'https://overpass-api.de/api/interpreter',
+                    'https://overpass.kumi.systems/api/interpreter'
+                ];
+                
+                for (const endpoint of endpoints) {
+                    try {
+                        const response = await fetch(endpoint, {
+                            method: 'POST',
+                            body: 'data=' + encodeURIComponent(query),
+                            headers: {
+                                'Content-Type': 'application/x-www-form-urlencoded'
+                            }
+                        });
+                        
+                        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                        return await response.json();
+                    } catch (error) {
+                        console.warn(`Failed to fetch from ${endpoint}:`, error);
+                    }
+                }
+                throw new Error('All endpoints failed');
+            }
+        }
+
+        // Utility function to calculate distance
+        function calculateDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371; // Radius of the Earth in km
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = 
+                Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            window.routeState = new RouteState();
+        });
+        L.Control.geocoder().addTo(map);
+    </script>
+</body>
+</html>

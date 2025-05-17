@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OSM Route Calculator</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css">
+    <style>
+        body { margin: 0; padding: 0; }
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 1000;
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.2);
+        }
+        #map { width: 100%; height: 100vh; }
+        #status, #distance { margin-top: 10px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <button onclick="fetchOSMData()">Load OSM Data</button>
+        <button onclick="calculateShortestPath()" id="routeBtn" disabled>Calculate Route</button>
+        <div id="status"></div>
+        <div id="distance"></div>
+    </div>
+    <div id="map"></div>
+
+    <!-- Required libraries -->
+    <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/osmtogeojson/3.0.0-beta.4/osmtogeojson.js"></script>
+    
+    <script>
+        // Configuration and state management
+        const CONFIG = {
+            OVERPASS_API_ENDPOINTS: [
+                'https://overpass-api.de/api/interpreter',
+                'https://overpass.kumi.systems/api/interpreter',
+                'https://maps.mail.ru/osm/tools/overpass/api/interpreter'
+            ],
+            MAP_CENTER: [19.5937, 78.9629],
+            ZOOM_LEVEL: 5,
+            PADDING_PERCENT: 0.2  // Increased padding for better route coverage
+        };
+
+        // State variables
+        let map, start = null, destination = null, step = 1;
+        let startMarker = null, destMarker = null, routeLayer = null, geoJsonLayer = null;
+        let graphData = null;
+
+        // Initialize map
+        function initMap() {
+            map = L.map('map').setView(CONFIG.MAP_CENTER, CONFIG.ZOOM_LEVEL);
+            
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors',
+                maxZoom: 19
+            }).addTo(map);
+
+            // Map click event handler
+            map.on('click', handleMapClick);
+        }
+
+        // Handle map click for point selection
+        function handleMapClick(e) {
+            if (step === 1) {
+                setStartPoint(e.latlng);
+            } else if (step === 2) {
+                setDestinationPoint(e.latlng);
+            }
+        }
+
+        // Set start point
+        function setStartPoint(latlng) {
+            if (startMarker) map.removeLayer(startMarker);
+            start = latlng;
+            startMarker = L.marker(start).addTo(map);
+            updateStatus("Start point selected. Click to select destination.");
+            step = 2;
+        }
+
+        // Set destination point
+        function setDestinationPoint(latlng) {
+            if (destMarker) map.removeLayer(destMarker);
+            destination = latlng;
+            destMarker = L.marker(destination).addTo(map);
+            updateStatus("Destination selected. Click 'Load OSM Data'.");
+            document.getElementById('routeBtn').disabled = false;
+            step = 1;
+        }
+
+        // Update status message
+        function updateStatus(message, isError = false) {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            statusEl.style.color = isError ? 'red' : 'black';
+            console.log(message);
+        }
+
+        // Fetch OSM data with multiple endpoint fallback
+        async function fetchOSMData() {
+            if (!start || !destination) {
+                updateStatus("Please select start and destination points first.", true);
+                return;
+            }
+
+            updateStatus("Loading OSM road network...");
+
+            try {
+                const bounds = calculateBounds(start, destination, CONFIG.PADDING_PERCENT);
+                const query = createOverpassQuery(bounds);
+                
+                let osmData = null;
+                for (const endpoint of CONFIG.OVERPASS_API_ENDPOINTS) {
+                    try {
+                        osmData = await fetchFromOverpassAPI(endpoint, query);
+                        if (osmData && osmData.elements && osmData.elements.length > 0) break;
+                    } catch (error) {
+                        console.warn(`Failed to fetch from ${endpoint}:`, error);
+                    }
+                }
+
+                if (!osmData || !osmData.elements || osmData.elements.length === 0) {
+                    throw new Error("No road network data found");
+                }
+
+                processOSMData(osmData);
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`, true);
+                console.error(error);
+            }
+        }
+
+        // Fetch data from Overpass API
+        async function fetchFromOverpassAPI(endpoint, query) {
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Accept': 'application/json'
+                },
+                body: `data=${encodeURIComponent(query)}`
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            return await response.json();
+        }
+
+        // Create Overpass API query
+        function createOverpassQuery(bounds) {
+            return `
+                [out:json][timeout:60];
+                (
+                    way["highway"]["highway"!="footway"]["highway"!="service"]["highway"!="path"]
+                    (${bounds.south},${bounds.west},${bounds.north},${bounds.east});
+                    >;
+                );
+                out body;
+                out skel qt;
+            `;
+        }
+
+        // Calculate bounding box with padding
+        function calculateBounds(start, destination, paddingPercent) {
+            const minLat = Math.min(start.lat, destination.lat);
+            const maxLat = Math.max(start.lat, destination.lat);
+            const minLng = Math.min(start.lng, destination.lng);
+            const maxLng = Math.max(start.lng, destination.lng);
+            
+            const latDiff = Math.abs(maxLat - minLat);
+            const lngDiff = Math.abs(maxLng - minLng);
+            
+            return {
+                south: minLat - latDiff * paddingPercent,
+                north: maxLat + latDiff * paddingPercent,
+                west: minLng - lngDiff * paddingPercent,
+                east: maxLng + lngDiff * paddingPercent
+            };
+        }
+
+        // Process OSM data
+        function processOSMData(osmData) {
+            // Clear previous layers
+            if (geoJsonLayer) map.removeLayer(geoJsonLayer);
+            
+            // Convert OSM to GeoJSON
+            const geojson = osmtogeojson(osmData);
+            
+            // Add GeoJSON layer
+            geoJsonLayer = L.geoJSON(geojson, {
+                style: {
+                    color: "#3388ff",
+                    weight: 2,
+                    opacity: 0.7
+                }
+            }).addTo(map);
+
+            // Create routing graph from GeoJSON
+            graphData = convertToGraph(geojson);
+            updateStatus("Road network loaded successfully. Click 'Calculate Route' to find the shortest path.");
+            document.getElementById('routeBtn').disabled = false;
+        }
+
+        // Convert GeoJSON to graph structure
+        function convertToGraph(geojson) {
+            const graph = {};
+            geojson.features.forEach((feature) => {
+                if (feature.geometry && feature.geometry.type === 'LineString') {
+                    const coordinates = feature.geometry.coordinates;
+                    for (let i = 0; i < coordinates.length - 1; i++) {
+                        const start = coordinates[i];
+                        const end = coordinates[i + 1];
+                        const startId = `${start[1]},${start[0]}`;
+                        const endId = `${end[1]},${end[0]}`;
+                        const distance = calculateDistance(start[1], start[0], end[1], end[0]);
+                        if (!graph[startId]) graph[startId] = [];
+                        if (!graph[endId]) graph[endId] = [];
+                        graph[startId].push({ node: endId, distance });
+                        graph[endId].push({ node: startId, distance });
+                    }
+                }
+            });
+            return graph;
+        }
+
+        // Calculate distance between two points
+        function calculateDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371; // Earth's radius in km
+            const dLat = toRad(lat2 - lat1);
+            const dLon = toRad(lon2 - lon1);
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+
+        // Convert degrees to radians
+        function toRad(degrees) {
+            return degrees * Math.PI / 180;
+        }
+
+        // Find nearest node in the graph
+        function findNearestNode(point, graph) {
+            let minDist = Infinity;
+            let nearest = null;
+            for (const nodeId in graph) {
+                const [nodeLat, nodeLng] = nodeId.split(',').map(Number);
+                const dist = calculateDistance(point.lat, point.lng, nodeLat, nodeLng);
+                if (dist < minDist) {
+                    minDist = dist;
+                    nearest = nodeId;
+                }
+            }
+            return nearest;
+        }
+
+        // Dijkstra's algorithm for shortest path
+        function dijkstra(graph, startNode, endNode) {
+            const distances = {};
+            const previous = {};
+            const unvisited = new Set(Object.keys(graph));
+            for (const node of unvisited) {
+                distances[node] = Infinity;
+                previous[node] = null;
+            }
+            distances[startNode] = 0;
+
+            while (unvisited.size > 0) {
+                let current = Array.from(unvisited).reduce((minNode, node) => 
+                    distances[node] < distances[minNode] ? node : minNode
+                );
+
+                if (current === endNode) break;
+
+                unvisited.delete(current);
+                for (const neighbor of graph[current]) {
+                    const alt = distances[current] + neighbor.distance;
+                    if (alt < distances[neighbor.node]) {
+                        distances[neighbor.node] = alt;
+                        previous[neighbor.node] = current;
+                    }
+                }
+            }
+
+            const path = [];
+            let current = endNode;
+            while (current) {
+                path.unshift(current);
+                current = previous[current];
+            }
+            return { path, distance: distances[endNode] };
+        }
+
+        // Calculate the shortest path
+        function calculateShortestPath() {
+            if (!graphData) {
+                updateStatus("Please load the road network first.", true);
+                return;
+            }
+            if (!start || !destination) {
+                updateStatus("Please select start and destination points.", true);
+                return;
+            }
+
+            updateStatus("Calculating shortest path...");
+            const startNode = findNearestNode(start, graphData);
+            const endNode = findNearestNode(destination, graphData);
+
+            if (!startNode || !endNode) {
+                updateStatus("Could not find nearby roads for the selected points.", true);
+                return;
+            }
+
+            const result = dijkstra(graphData, startNode, endNode);
+            if (!result.path || result.path.length < 2) {
+                updateStatus("Could not find a valid route between the selected points.", true);
+                return;
+            }
+
+            if (routeLayer) {
+                map.removeLayer(routeLayer);
+            }
+
+            const route_Coordinates = result.path.map(node => {
+                const [lat, lng] = node.split(',').map(Number);
+                return [lat, lng];
+            });
+
+            routeLayer = L.polyline(routeCoordinates, {
+                color: 'red',
+                weight: 4
+            }).addTo(map);
+
+            document.getElementById('distance').innerHTML = 
+                `Total distance: ${result.distance.toFixed(2)} km`;
+            updateStatus("Route calculated successfully!");
+            map.fitBounds(routeLayer.getBounds());
+        }
+
+        // Initialize the map on page load
+        window.onload = initMap;
+    </script>
+</body>
+</html>

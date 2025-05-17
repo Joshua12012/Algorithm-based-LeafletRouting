@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leaflet Maps</title>
+    <!-- leaflet css -->
+     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css">
+     <style>
+        body{
+            margin: 0;
+            padding: 0;
+        }
+        #map{
+            width:100%;
+            height:100vh;
+        }
+     </style>
+</head>
+<body>
+    <div id="map"></div>
+</body>
+</html>
+<script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+<script src="./geoJSON/point.js"></script>
+<script src="./geoJSON/map.js"></script>
+<script>
+    // Map initialization
+    var map=L.map('map').setView([15.2993,74.1240],6);
+    var osm =  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19,
+	attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    });
+    osm.addTo(map);
+
+    var stamen_terrain = L.tileLayer('https://tiles.stadiamaps.com/tiles/stamen_terrain/{z}/{x}/{y}{r}.{ext}', {
+	minZoom: 0,
+	maxZoom: 18,
+	attribution: '&copy; <a href="https://www.stadiamaps.com/" target="_blank">Stadia Maps</a> &copy; <a href="https://www.stamen.com/" target="_blank">Stamen Design</a> &copy; <a href="https://openmaptiles.org/" target="_blank">OpenMapTiles</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+	ext: 'png'
+    });
+    stamen_terrain.addTo(map);
+
+    // google streets
+    var google_maps = L.tileLayer('http://{s}.google.com/vt?lyrs=m&x={x}&y={y}&z={z}',{
+    maxZoom: 20,
+    subdomains:['mt0','mt1','mt2','mt3']
+    });
+    google_maps.addTo(map);
+
+    // marker icon
+    var myIcon = L.icon({
+    iconUrl: 'img/marker3.png',
+    iconSize: [40, 40],
+    });
+
+    var singleMarker = L.marker([15.2993,74.1240],{icon: myIcon,draggable: true}).addTo(map);
+    var secondMarker = L.marker([16.2993,75.1240],{icon: myIcon,draggable: true}).addTo(map);
+    var popUp = singleMarker.bindPopup("This is South Goa. Position: "+singleMarker.getLatLng()); // openPopup(): it is should be used to open the popup
+    popUp.addTo(map);
+    console.log(singleMarker.toGeoJSON())
+    
+    var pointData = L.geoJSON(pointjson).addTo(map);
+    var mapData = L.geoJSON(mapjson, {
+        onEachFeature: function (feature, layer) {
+            layer.bindPopup('<b>Name: </b>' + feature.properties.name)
+        },
+        style: {
+            fillColor: '#ff0000',
+            opacity: 0.5,
+            //fillOpacity: 1,
+            //stroke: '#c0c0c0',
+            weight:3
+        }
+    }).addTo(map);
+
+    // layer controller
+    var baseMaps = {
+    "OSM": osm,
+    "Stamen_terrain": stamen_terrain,
+    "google_maps": google_maps
+    };
+
+    var overlayMaps = {
+        "Marker 1": singleMarker,
+        "Marker 2": secondMarker,
+        "Point Data": pointData,
+        "Map Data": mapData
+    };
+
+    var layerControl = L.control.layers(baseMaps, overlayMaps,{collapsed: true}).addTo(map);
+
+
+
+</script>
